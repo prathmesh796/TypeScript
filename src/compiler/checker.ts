@@ -27911,7 +27911,6 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
     // constituent types keyed by the literal types of the property by that name in each constituent type.
     function getKeyPropertyName(unionType: UnionType): __String | undefined {
         const types = unionType.types;
-        // We only construct maps for unions with many non-primitive constituents.
         if (
             types.length < 10 || getObjectFlags(unionType) & ObjectFlags.PrimitiveUnion ||
             countWhere(types, t => !!(t.flags & (TypeFlags.Object | TypeFlags.InstantiableNonPrimitive))) < 10
@@ -27919,15 +27918,37 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
             return undefined;
         }
         if (unionType.keyPropertyName === undefined) {
-            // The candidate key property name is the name of the first property with a unit type in one of the
-            // constituent types.
-            const keyPropertyName = forEach(types, t =>
-                t.flags & (TypeFlags.Object | TypeFlags.InstantiableNonPrimitive) ?
-                    forEach(getPropertiesOfType(t), p => isUnitType(getTypeOfSymbol(p)) ? p.escapedName : undefined) :
-                    undefined);
-            const mapByKeyProperty = keyPropertyName && mapTypesByKeyProperty(types, keyPropertyName);
-            unionType.keyPropertyName = mapByKeyProperty ? keyPropertyName : "" as __String;
-            unionType.constituentMap = mapByKeyProperty;
+            // Map property name to count of object types where it's a unit (literal) type
+            const propertyCounts: Map<string, number> = new Map();
+            let objectTypeCount = 0;
+
+            for (const t of types) {
+                if (t.flags & (TypeFlags.Object | TypeFlags.InstantiableNonPrimitive)) {
+                    objectTypeCount++;
+                    for (const p of getPropertiesOfType(t)) {
+                        if (isUnitType(getTypeOfSymbol(p))) {
+                            const name = p.escapedName as string;
+                            propertyCounts.set(name, (propertyCounts.get(name) || 0) + 1);
+                        }
+                    }
+                }
+            }
+
+            // Choose property present with unit type in ALL object members, or the most common
+            let bestPropertyName: string | undefined;
+            let bestCount = 0;
+
+            for (const [name, count] of propertyCounts.entries()) {
+                // Prefer property present in all object types, otherwise pick the most frequent
+                if ((count > bestCount) || (count === objectTypeCount && count >= bestCount)) {
+                    bestPropertyName = name;
+                    bestCount = count;
+                }
+            }
+
+            const mapByKeyProperty = bestPropertyName && mapTypesByKeyProperty(types, bestPropertyName as __String);
+            unionType.keyPropertyName = mapByKeyProperty ? bestPropertyName as __String : "" as __String;
+            unionType.constituentMap = typeof mapByKeyProperty === "object" ? mapByKeyProperty : undefined;
         }
         return (unionType.keyPropertyName as string).length ? unionType.keyPropertyName : undefined;
     }
